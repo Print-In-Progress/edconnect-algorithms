@@ -10,4 +10,8 @@ Contributions are welcome! If you have ideas for improving the algorithms, submi
 
 ### License
 
-Released under [License] (LICENSE.md)
+📜 Released under [License](https://github.com/Print-In-Progress/edconnect-algorithms/blob/main/LICENSE.md)
+
+### Contact
+
+📧 For questions, reach out at mark.grinberg@printinprogress.net.
