@@ -10,4 +10,4 @@ Contributions are welcome! If you have ideas for improving the algorithms, submi
 
 ### License
 
-Released under [LICENSE.md] ("License")
+Released under [License] (LICENSE.md)
