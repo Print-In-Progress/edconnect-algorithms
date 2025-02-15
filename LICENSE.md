@@ -10,7 +10,7 @@ This repository (“edConnect Algorithms”) and all associated code, documentat
 By accessing or using this repository, you agree that you will not use, copy, or distribute any part of the code or documentation without first obtaining a valid license agreement from Print In Progress. Any unauthorized use of the software is strictly prohibited.
 
 For licensing inquiries or to request permission for use, please contact:
-    Email: mark.grinberg006@printinprogress.com
+    Email: mark.grinberg@printinprogress.com
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT. IN NO EVENT SHALL THE LICENSOR BE LIABLE FOR ANY DAMAGES OR OTHER LIABILITY ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
