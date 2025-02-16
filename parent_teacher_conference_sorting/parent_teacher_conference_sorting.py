@@ -1,212 +1,164 @@
 import networkx as nx
 
 
-def feasibility_check(time_slots, teachers, parent_preferences):
-    max_possible_meetings = len(time_slots)
-    requested_meetings = sum(
-        1 for p in parent_preferences if t in parent_preferences[p]["teachers"]
-    )
-    if requested_meetings > max_possible_meetings:
-        print(
-            f"Warning: Teacher {t} has {requested_meetings} requests but only {max_possible_meetings} slots.\nConsider adding more slots or removing some requests."
-        )
-        return False
-
-
-def schedule_meetings_optimal(
-    time_slots, teachers, parent_preferences, preferred_reward=10, drop_penalty=1000
+def schedule_meetings_aggregator(
+    meeting_requests,
+    teacher_slots,
+    global_timeslots,
+    drop_penalty=1000,
+    reschedule_penalty=50,
+    parent_bonus=20,
 ):
     """
-    Computes an optimal assignment of meeting requests to timeslots via a min-cost flow network.
+    Schedules parent-teacher meetings using an aggregator (time-indexed bipartite) formulation.
 
-    Each meeting request (a parent-teacher pair) is assigned a timeslot if possible.
-    A negative cost (i.e. reward) is given for assigning a meeting to a parent's preferred timeslot.
-
-    If a meeting cannot be scheduled in any timeslot (due to conflicts), it will be dropped at a high penalty cost.
-
-    Conflict constraints:
-      - A teacher can only meet one parent per timeslot.
-      - A parent can only have one meeting per timeslot.
-
-    Returns:
-      schedule: A dict mapping (parent, teacher) -> assigned timeslot for those meetings that are scheduled.
-                (Dropped meetings will simply not appear in this dict.)
-      total_reward: The total reward (taking into account drop penalties)
-      unscheduled: A list of (parent, teacher) meeting requests that were dropped.
+    - Each parent p has an aggregator node A_p with supply equal to the number of meeting requests from p.
+    - For each global timeslot t, a node P_{p,t} is created for parent p (capacity 1).
+    - For each teacher T and timeslot t (in teacher_slots[T] ∩ global_timeslots), a node T_{T,t} is created (capacity 1).
+    - For each meeting request from parent p to teacher T with preferred time, an edge is added from P_{p,t} to T_{T,t}
+      (for each candidate timeslot t) with cost = 0 if t equals the preferred time, else reschedule_penalty.
+    - Bonus edges between consecutive parent's timeslot nodes (P_{p,t} → P_{p,t_next}) with cost -parent_bonus encourage consecutive meetings.
+    - Teacher aggregator nodes B_T (demand = number of meeting requests for T) collect flows from teacher slot nodes.
+    - A drop edge from each parent aggregator A_p to sink (with cost = drop_penalty) allows dropping requests if needed.
     """
-    if not feasibility_check(time_slots, teachers, parent_preferences):
-        return
-
     G = nx.DiGraph()
-
-    # 1. Identify all meeting requests.
-    meeting_requests = []  # Each element is a tuple (parent, teacher)
-    for parent, prefs in parent_preferences.items():
-        for teacher in prefs["teachers"]:
-            meeting_requests.append((parent, teacher))
-    total_requests = len(meeting_requests)
-
-    # 2. Set up supply and demand.
     source = "source"
     sink = "sink"
-    # The source supplies one unit for each meeting request.
-    G.add_node(source, demand=-total_requests)
-    # The sink must absorb total_requests units.
-    G.add_node(sink, demand=total_requests)
 
-    # 3. Build the network for each meeting request.
-    for p, t in meeting_requests:
-        m_node = f"M_{p}_{t}"
-        G.add_node(m_node, demand=0)
-        # Edge from source to meeting node.
-        G.add_edge(source, m_node, capacity=1, weight=0)
+    # Calculate parent's supply (number of meeting requests from that parent)
+    parent_requests = {}
+    # Also record the meeting request info for each (parent, teacher) pair (assumed unique)
+    parent_teacher_pref = {}  # key: (parent, teacher) -> preferred timeslot
+    teacher_request_count = {}
+    for req in meeting_requests:
+        p = req["parent"]
+        T = req["teacher"]
+        parent_requests[p] = parent_requests.get(p, 0) + 1
+        parent_teacher_pref[(p, T)] = req["preferred"]
+        teacher_request_count[T] = teacher_request_count.get(T, 0) + 1
 
-        # For each timeslot, create a candidate route.
-        for r in time_slots:
-            # Cost: negative reward if timeslot is preferred, else 0.
-            cost = (
-                -preferred_reward
-                if r in parent_preferences[p]["preferred_slots"]
-                else 0
+    # Create source and sink nodes.
+    G.add_node(source, demand=0)
+    G.add_node(sink, demand=0)
+
+    # Create parent aggregator nodes A_p and connect source → A_p.
+    for p, supply in parent_requests.items():
+        node = f"A_{p}"
+        G.add_node(node, demand=0)
+        # Edge from source to parent's aggregator: supply = number of meeting requests from p.
+        G.add_edge(source, node, capacity=supply, weight=0)
+
+    # Create parent timeslot nodes P_{p,t} for each parent and each global timeslot.
+    parent_nodes = {}  # key: (p,t) -> node name
+    for p in parent_requests:
+        for t in global_timeslots:
+            node = f"P_{p}_{t}"
+            parent_nodes[(p, t)] = node
+            # Each parent's slot can be used at most once.
+            # We'll connect A_p to each P_{p,t} with capacity 1.
+            G.add_edge(f"A_{p}", node, capacity=1, weight=0)
+
+    # Add bonus edges between consecutive parent's timeslot nodes.
+    for p in parent_requests:
+        for i in range(len(global_timeslots) - 1):
+            t = global_timeslots[i]
+            t_next = global_timeslots[i + 1]
+            node_from = parent_nodes[(p, t)]
+            node_to = parent_nodes[(p, t_next)]
+            # Bonus edge with capacity 1 and negative cost rewards consecutive use.
+            G.add_edge(node_from, node_to, capacity=1, weight=-parent_bonus)
+
+    # Create teacher aggregator nodes B_T and teacher timeslot nodes T_{T,t}.
+    teacher_nodes = {}  # key: (T, t) -> node name
+    for T, slots in teacher_slots.items():
+        for t in slots:
+            if t in global_timeslots:
+                node = f"T_{T}_{t}"
+                teacher_nodes[(T, t)] = node
+                # Each teacher timeslot has capacity 1; connect to teacher aggregator later.
+                G.add_node(node, demand=0)
+    # Create teacher aggregator nodes B_T and connect teacher timeslot nodes → B_T.
+    for T, count in teacher_request_count.items():
+        node = f"B_{T}"
+        G.add_node(node, demand=0)
+        for t in teacher_slots[T]:
+            if t in global_timeslots and (T, t) in teacher_nodes:
+                # Edge from teacher timeslot node to aggregator B_T.
+                G.add_edge(teacher_nodes[(T, t)], node, capacity=1, weight=0)
+        # Connect teacher aggregator to sink.
+        G.add_edge(node, sink, capacity=count, weight=0)
+
+    # For each meeting request from parent p to teacher T with preferred time pref,
+    # add edges from parent's timeslot nodes to teacher's timeslot nodes.
+    # (We assume each parent–teacher pair appears at most once.)
+    for (p, T), pref in parent_teacher_pref.items():
+        # For candidate timeslot t, add edge from P_{p,t} to T_{T,t} (if available).
+        for t in teacher_slots[T]:
+            if (
+                t in global_timeslots
+                and (p, t) in parent_nodes
+                and (T, t) in teacher_nodes
+            ):
+                cost = 0 if t == pref else reschedule_penalty
+                G.add_edge(
+                    parent_nodes[(p, t)], teacher_nodes[(T, t)], capacity=1, weight=cost
+                )
+
+    # Add drop edges: from parent's aggregator A_p directly to sink (to drop a meeting request) at high cost.
+    # This ensures that if a parent's meeting cannot be scheduled, it can be dropped with penalty.
+    for p, supply in parent_requests.items():
+        G.add_edge(f"A_{p}", sink, capacity=supply, weight=drop_penalty)
+
+    # Set overall demand: total supply = sum of parent's requests, total demand = same.
+    total_requests = sum(parent_requests.values())
+    G.nodes[source]["demand"] = -total_requests
+    G.nodes[sink]["demand"] = total_requests
+
+    # Compute min-cost flow.
+    flowDict = nx.min_cost_flow(G)
+
+    # Extract schedule: for each edge from a parent's timeslot node P_{p,t} to a teacher's timeslot node T_{T,t}
+    # that carries flow, record that meeting as assigned.
+    schedule = []
+    nonpreferred = []
+    # We know the meeting requests by (p,T) pairs from parent_teacher_pref.
+    for (p, T), pref in parent_teacher_pref.items():
+        # Check candidate timeslots.
+        assigned_t = None
+        for t in teacher_slots[T]:
+            if t in global_timeslots:
+                pnode = parent_nodes[(p, t)]
+                tnode = teacher_nodes[(T, t)]
+                # Check if flow goes from pnode to tnode.
+                if (
+                    pnode in flowDict
+                    and tnode in flowDict[pnode]
+                    and flowDict[pnode][tnode] > 0
+                ):
+                    assigned_t = t
+                    break
+        if assigned_t is not None:
+            schedule.append(
+                {
+                    "parent": p,
+                    "teacher": T,
+                    "timeslot": assigned_t,
+                    "preferred": pref,
+                    "cost": 0 if assigned_t == pref else reschedule_penalty,
+                }
+            )
+            if assigned_t != pref:
+                nonpreferred.append((p, T))
+        else:
+            # Meeting request dropped.
+            schedule.append(
+                {
+                    "parent": p,
+                    "teacher": T,
+                    "timeslot": None,
+                    "preferred": pref,
+                    "cost": drop_penalty,
+                }
             )
 
-            # Create candidate nodes.
-            a_node = f"A_{p}_{t}_{r}"
-            b_node = f"B_{p}_{t}_{r}"
-            G.add_node(a_node, demand=0)
-            G.add_node(b_node, demand=0)
-
-            # Edge from meeting node to candidate node.
-            G.add_edge(m_node, a_node, capacity=1, weight=cost)
-
-            # Parent gadget: ensure parent p uses timeslot r at most once.
-            p_in = f"P_{p}_{r}_in"
-            if p_in not in G:
-                G.add_node(p_in, demand=0)
-            G.add_edge(a_node, p_in, capacity=1, weight=0)
-
-            p_out = f"P_{p}_{r}_out"
-            if p_out not in G:
-                G.add_node(p_out, demand=0)
-                G.add_edge(p_in, p_out, capacity=1, weight=0)
-            G.add_edge(p_out, b_node, capacity=1, weight=0)
-
-            # Teacher gadget: ensure teacher t uses timeslot r at most once.
-            t_in = f"T_{t}_{r}_in"
-            if t_in not in G:
-                G.add_node(t_in, demand=0)
-            # Route from candidate node into teacher gadget.
-            G.add_edge(b_node, t_in, capacity=1, weight=0)
-
-            t_out = f"T_{t}_{r}_out"
-            if t_out not in G:
-                G.add_node(t_out, demand=0)
-                G.add_edge(t_in, t_out, capacity=1, weight=0)
-
-        # 4. Add a "drop" edge directly from the meeting node to the sink.
-        # This edge allows the meeting to be dropped if it cannot be scheduled.
-        G.add_edge(m_node, sink, capacity=1, weight=drop_penalty)
-
-    # 5. Connect each teacher's timeslot gadget to the sink and add shift edges.
-    time_shift_penalty = 5  # Small penalty for moving teachers' meetings
-    for teacher in teachers:
-        for r in time_slots:
-            t_in = f"T_{teacher}_{r}_in"
-            t_out = f"T_{teacher}_{r}_out"
-            # Ensure the teacher gadget for timeslot r is connected to the sink.
-            if not G.has_edge(t_out, sink):
-                G.add_edge(t_out, sink, capacity=1, weight=0)
-            # Add shift edges: allow the meeting to shift from timeslot r to any alternative timeslot.
-            for alt_r in time_slots:
-                if alt_r != r:
-                    alt_t_in = f"T_{teacher}_{alt_r}_in"
-                    # Add the shift edge if it does not already exist.
-                    if not G.has_edge(t_out, alt_t_in):
-                        G.add_edge(
-                            t_out, alt_t_in, capacity=1, weight=time_shift_penalty
-                        )
-
-    # 6. Compute the min–cost flow.
-    try:
-        flowCost, flowDict = nx.network_simplex(G)
-    except nx.NetworkXUnfeasible as e:
-        raise Exception(
-            "The flow problem is unfeasible. This may indicate that the conflict constraints are too tight or that the demands are mismatched."
-        ) from e
-
-    total_reward = (
-        -flowCost
-    )  # Note: drop edges add a positive cost, reducing total reward.
-
-    # 7. Convert the flow into a schedule.
-    schedule = {}
-    unscheduled = []
-    for p, t in meeting_requests:
-        m_node = f"M_{p}_{t}"
-        scheduled = False
-        # Check all candidate routes for timeslots.
-        for r in time_slots:
-            a_node = f"A_{p}_{t}_{r}"
-            if a_node in flowDict[m_node] and flowDict[m_node][a_node] > 0:
-                schedule[(p, t)] = r
-                scheduled = True
-                break
-        # If not scheduled via any candidate route, it must have taken the drop edge.
-        if not scheduled:
-            unscheduled.append((p, t))
-
-    return schedule, total_reward, unscheduled
-
-
-# Example Usage
-if __name__ == "__main__":
-    # Sample Dataset
-    time_slots = ["17:00", "17:30", "18:00", "18:30", "19:00"]
-    teachers = ["Alice Smith", "Bob Johnson", "Carol Williams"]
-    parent_preferences = {
-        "Parent1": {
-            "teachers": ["Alice Smith", "Bob Johnson"],
-            "preferred_slots": ["17:00", "17:30"],
-        },
-        "Parent2": {
-            "teachers": ["Alice Smith", "Carol Williams"],
-            "preferred_slots": ["18:00", "18:00"],
-        },
-        "Parent3": {
-            "teachers": ["Bob Johnson", "Carol Williams"],
-            "preferred_slots": ["17:30", "18:30"],
-        },
-    }
-    schedule, total_reward, unscheduled = schedule_meetings_optimal(
-        time_slots, teachers, parent_preferences, preferred_reward=10, drop_penalty=1000
-    )
-    non_preferred = []
-    for (p, t), timeslot in schedule.items():
-        if timeslot not in parent_preferences[p]["preferred_slots"]:
-            non_preferred.append((p, t, timeslot))
-    print("--- Scheduled Meetings ---")
-    for (p, t), slot in schedule.items():
-        is_preferred = "✓" if slot in parent_preferences[p]["preferred_slots"] else ""
-        print(f"Parent: {p:<8} Teacher: {t:<15} Timeslot: {slot:<6} {is_preferred}")
-
-    print("\nTotal reward (after penalties):", total_reward)
-    print(
-        "Total meeting requests:",
-        len(parent_preferences["Parent1"])
-        + len(parent_preferences["Parent2"])
-        + len(parent_preferences["Parent3"]),
-    )  # just an example count
-    print("Meetings scheduled:", len(schedule))
-    print("Meetings dropped:", len(unscheduled))
-    if unscheduled:
-        print("Dropped meeting requests:")
-        for req in unscheduled:
-            print("  ", req)
-    print("Meetings not in their preferred timeslots:")
-    if non_preferred:
-        for p, t, timeslot in non_preferred:
-            print(f"  Parent: {p}, Teacher: {t}, scheduled at: {timeslot}")
-    else:
-        print("  All meetings are in a preferred timeslot!")
-
-# 18 Time slots, 600 Teacher Student Pairs
+    return schedule, nonpreferred, flowDict, G
