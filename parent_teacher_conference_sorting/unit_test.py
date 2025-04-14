@@ -100,6 +100,34 @@ class TestParentTeacherConferenceSortingAggregator(unittest.TestCase):
             "Sum of scheduled and dropped meetings should equal total meeting requests.",
         )
 
+        self.assertEqual(
+            scheduled_count + dropped_count,
+            total_requests,
+            "Sum of scheduled and dropped meetings should equal total meeting requests.",
+        )
+
+        # New metrics: total available meeting space and meeting space left.
+        total_meeting_space = sum(
+            len(self.teacher_slots[t]) for t in self.teacher_slots
+        )
+        meeting_space_left = total_meeting_space - scheduled_count
+        print(f"Total available meeting space: {total_meeting_space}")
+        print(f"Total meeting space left: {meeting_space_left}")
+
+        # Compute and print out the timeslots that are left for each teacher.
+        left_slots = {}
+        for teacher, times in self.teacher_slots.items():
+            booked_slots = {
+                m["timeslot"]
+                for m in schedule
+                if m["teacher"] == teacher and m["timeslot"] is not None
+            }
+            available_slots = set(times) - booked_slots
+            left_slots[teacher] = sorted(list(available_slots))
+        print("Timeslots left per teacher:")
+        for teacher, slots in left_slots.items():
+            print(f"  {teacher}: {slots}")
+
 
 if __name__ == "__main__":
     unittest.main()
